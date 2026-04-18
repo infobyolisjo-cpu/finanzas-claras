@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 8% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 66 89% 69%;
+    --primary-foreground: 225 14% 20%;
+    --secondary: 215 14% 34%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 215 14% 34%;
+    --muted-foreground: 215 14% 34%;
+    --accent: 215 14% 34%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 66 89% 69%;
+
+    /* Chart colors */
+    --chart-1: 66 89% 69%;
+    --chart-2: 142 67% 41%;
+    --chart-3: 0 72% 51%;
+    --chart-4: 28 80% 56%;
+    --chart-5: 280 65% 55%;
+
+    /* Custom colors */
+    --positive: 142 67% 41%;
+    --negative: 0 72% 51%;
+
+    /* Sidebar */
+    --sidebar-background: 240 29% 45%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 210 40% 98%;
+    --sidebar-primary-foreground: 240 29% 45%;
+    --sidebar-accent: 240 29% 40%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 240 29% 35%;
+    --sidebar-ring: 66 89% 69%;
+  }
+ 
+  .dark {
+    --background: 240 8% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 66 89% 69%;
+    --primary-foreground: 225 14% 20%;
+    --secondary: 215 14% 34%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 215 14% 34%;
+    --muted-foreground: 215 14% 34%;
+    --accent: 215 14% 34%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 66 89% 69%;
+
+    /* Chart colors */
+    --chart-1: 66 89% 69%;
+    --chart-2: 142 67% 41%;
+    --chart-3: 0 63% 31%;
+    --chart-4: 28 80% 56%;
+    --chart-5: 280 65% 55%;
+
+    /* Custom colors */
+    --positive: 142 67% 41%;
+    --negative: 0 63% 31%;
+
+    /* Sidebar */
+    --sidebar-background: 240 29% 45%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 210 40% 98%;
+    --sidebar-primary-foreground: 240 29% 45%;
+    --sidebar-accent: 240 29% 40%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 240 29% 35%;
+    --sidebar-ring: 66 89% 69%;
+  }
+}
+ 
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom Financial Colors */
+.text-positive {
+  color: hsl(var(--positive));
+}
+
+.text-negative {
+  color: hsl(var(--negative));
+}
