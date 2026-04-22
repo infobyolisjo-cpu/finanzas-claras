@@ -2,6 +2,7 @@
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
 import { Icons } from '@/components/icons';
+import { FinancialAnalyzer } from '@/components/financial-analyzer';
 
 export default function LandingPage() {
   return (
@@ -42,6 +43,8 @@ export default function LandingPage() {
             </div>
           </div>
         </section>
+
+        <FinancialAnalyzer />
 
         <section className="bg-[#515193] py-10 md:py-12">
           <div className="container mx-auto text-center">
