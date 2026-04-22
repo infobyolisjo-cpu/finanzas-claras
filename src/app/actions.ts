@@ -39,7 +39,7 @@ async function getUserId(): Promise<string | null> {
 
 // ===== Helpers =====
 
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+const GEMINI_MODELS = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'];
 
 async function callGemini(prompt: string, pdfBase64?: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
