@@ -10,6 +10,7 @@ import {
   updateTransactionCategory,
 } from '@/lib/firestore';
 import type { Transaction, Import } from '@/lib/types';
+import { getInsights } from '@/lib/ai/get-insights';
 
 async function getUserId(): Promise<string | null> {
   const headersList = headers();
@@ -156,7 +157,7 @@ export type AiInsights = {
 };
 
 // Layer 2: receives a small structured summary extracted client-side (no PDF).
-// Returns null gracefully when Gemini is unavailable.
+// Tries Gemini first, falls back to OpenAI; returns null gracefully when both fail.
 export async function getAiInsightsAction(input: {
   bankName: string | null;
   periodStart: string | null;
@@ -165,45 +166,31 @@ export async function getAiInsightsAction(input: {
   transactionCount: number;
   topDescriptions: string[];
 }): Promise<AiInsights | null> {
-  const fmt = (n: number) =>
-    new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(n);
+  const period =
+    input.periodStart && input.periodEnd
+      ? `${input.periodStart} al ${input.periodEnd}`
+      : null;
 
-  const savingsRate =
-    input.totals.deposits > 0
-      ? ((input.totals.net / input.totals.deposits) * 100).toFixed(1)
-      : '0';
+  const result = await getInsights({
+    bank:              input.bankName,
+    period,
+    income:            input.totals.deposits,
+    expenses:          input.totals.withdrawals,
+    fees:              input.totals.fees,
+    net:               input.totals.net,
+    transaction_count: input.transactionCount,
+    top_descriptions:  input.topDescriptions,
+  });
 
-  const prompt = `Eres una asesora financiera personal experta. Analiza este resumen financiero y genera insights en español.
+  if (!result.ok) return null;
 
-Datos del estado de cuenta:
-- Banco: ${input.bankName ?? 'No identificado'}
-- Período: ${input.periodStart && input.periodEnd ? `${input.periodStart} al ${input.periodEnd}` : 'No identificado'}
-- Depósitos totales: ${fmt(input.totals.deposits)}
-- Retiros totales: ${fmt(input.totals.withdrawals)}
-- Comisiones: ${fmt(input.totals.fees)}
-- Saldo neto: ${fmt(input.totals.net)}
-- Tasa de ahorro: ${savingsRate}%
-- Número de movimientos: ${input.transactionCount}
-- Principales conceptos: ${input.topDescriptions.slice(0, 6).join(', ') || 'No identificados'}
-
-Responde ÚNICAMENTE con JSON válido (sin markdown):
-{
-  "headline": "título corto y claro (máx 10 palabras)",
-  "summary": "resumen ejecutivo en 2-3 oraciones concretas",
-  "insights": ["insight 1", "insight 2", "insight 3"],
-  "risks": ["riesgo 1", "riesgo 2"],
-  "recommendations": ["recomendación 1", "recomendación 2", "recomendación 3"]
-}`;
-
-  try {
-    const raw = await callGemini(prompt);
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    const parsed = JSON.parse(match[0]);
-    return parsed as AiInsights;
-  } catch {
-    return null;
-  }
+  return {
+    headline:        result.data.headline,
+    summary:         result.data.summary,
+    insights:        result.data.insights,
+    risks:           result.data.risks,
+    recommendations: result.data.recommendations,
+  };
 }
 
 // ===== Firestore actions =====
