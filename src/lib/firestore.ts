@@ -20,7 +20,7 @@ import {
   arrayRemove,
 } from 'firebase/firestore';
 import { initializeFirebase } from '@/firebase';
-import type { Transaction, TransactionFirestore, Budget, Import, ImportFirestore } from '@/lib/types';
+import type { Transaction, TransactionFirestore, Budget, Import, ImportFirestore, UserProfile } from '@/lib/types';
 import { getAuth } from 'firebase/auth';
 import { errorEmitter } from '@/firebase/error-emitter';
 import { FirestorePermissionError } from '@/firebase/errors';
@@ -422,4 +422,27 @@ export async function deleteImportAndTransactions(userId: string, importId: stri
         }
         return { success: false, error: e.message, deletedCount: 0 };
     }
+}
+
+export async function saveUserProfile(userId: string, profile: Omit<UserProfile, 'userId' | 'selectedAt'>): Promise<void> {
+  const ref = doc(firestore, 'users', userId, 'profile', 'main');
+  await setDoc(ref, {
+    userId,
+    businessType: profile.businessType,
+    hasEmployees: profile.hasEmployees,
+    selectedAt: serverTimestamp(),
+  });
+}
+
+export async function getUserProfile(userId: string): Promise<UserProfile | null> {
+  const ref = doc(firestore, 'users', userId, 'profile', 'main');
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return {
+    userId: data.userId,
+    businessType: data.businessType,
+    hasEmployees: data.hasEmployees,
+    selectedAt: (data.selectedAt as Timestamp).toDate(),
+  };
 }

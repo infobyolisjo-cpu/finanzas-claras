@@ -20,16 +20,128 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { BookOpen, Calendar, ArrowRightLeft, FolderSync, AlertTriangle, PieChart, Banknote, Trash2, Loader2, FileArchive } from 'lucide-react';
+import { BookOpen, Calendar, ArrowRightLeft, FolderSync, AlertTriangle, PieChart, Banknote, Trash2, Loader2, FileArchive, Sparkles, CheckCircle2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { usePeriod } from '@/context/period-context';
 import { deleteImportAndTransactionsAction, cleanupDuplicateTransactionsAction } from '@/app/actions';
-import { getUserImports } from '@/lib/firestore';
-import type { Import } from '@/lib/types';
+import { getUserImports, getUserProfile, saveUserProfile } from '@/lib/firestore';
+import type { Import, BusinessType, UserProfile } from '@/lib/types';
+import { BUSINESS_PROFILES, type BusinessProfile } from '@/lib/constants/business-profiles';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { useAuth } from '@/context/auth-context';
+import { cn } from '@/lib/utils';
 
+
+function BusinessProfileSelector() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const [selected, setSelected] = useState<string | null>(null);
+  const [hasEmployees, setHasEmployees] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    getUserProfile(user.uid).then((profile) => {
+      if (profile) {
+        const match = BUSINESS_PROFILES.find(
+          (p) => p.businessType === profile.businessType &&
+            (profile.businessType === 'mixto' || p.hasEmployees === profile.hasEmployees)
+        );
+        if (match) setSelected(match.id);
+        setHasEmployees(profile.hasEmployees);
+      }
+      setLoading(false);
+    });
+  }, [user]);
+
+  const handleSave = async (profileId: string) => {
+    if (!user) return;
+    const profile = BUSINESS_PROFILES.find((p) => p.id === profileId);
+    if (!profile) return;
+    setSaving(true);
+    try {
+      await saveUserProfile(user.uid, {
+        businessType: profile.businessType,
+        hasEmployees: profile.hasEmployees,
+      });
+      setSelected(profileId);
+      toast({ title: 'Perfil guardado', description: `Ahora tu app está configurada para: ${profile.name}` });
+    } catch {
+      toast({ variant: 'destructive', title: 'Error', description: 'No se pudo guardar el perfil.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const activeProfile = BUSINESS_PROFILES.find((p) => p.id === selected);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <Sparkles className="h-6 w-6 text-primary" />
+          <CardTitle className="text-xl">Perfil de negocio</CardTitle>
+        </div>
+        <CardDescription>
+          Elige el perfil que mejor describe tu actividad. Esto adapta las categorías y sugerencias a tu tipo de negocio.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <p className="text-muted-foreground text-sm">Cargando perfil...</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {BUSINESS_PROFILES.map((profile) => {
+                const isSelected = selected === profile.id;
+                return (
+                  <button
+                    key={profile.id}
+                    onClick={() => handleSave(profile.id)}
+                    disabled={saving}
+                    className={cn(
+                      'relative flex flex-col items-start gap-2 rounded-xl border-2 p-4 text-left transition-all hover:border-primary/60 hover:bg-muted/40 disabled:opacity-60',
+                      isSelected
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border bg-card'
+                    )}
+                  >
+                    {isSelected && (
+                      <CheckCircle2 className="absolute right-3 top-3 h-4 w-4 text-primary" />
+                    )}
+                    <span className="text-2xl">{profile.emoji}</span>
+                    <div>
+                      <p className="font-semibold text-sm leading-tight">{profile.name}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{profile.description}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {activeProfile && (
+              <div className="rounded-lg border bg-muted/30 p-4 space-y-2">
+                <p className="text-sm font-semibold text-foreground">
+                  {activeProfile.emoji} Consejos para tu perfil
+                </p>
+                <ul className="space-y-1">
+                  {activeProfile.tips.map((tip, i) => (
+                    <li key={i} className="text-sm text-muted-foreground flex gap-2">
+                      <span className="text-primary mt-0.5">•</span>
+                      <span>{tip}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function ImportsManager() {
     const { toast } = useToast();
@@ -250,6 +362,8 @@ export default function SettingsPage() {
                     <p className="text-muted-foreground">Configura tus preferencias y aprende cómo funciona la app.</p>
                 </div>
             </div>
+
+            <BusinessProfileSelector />
 
             <ImportsManager />
 

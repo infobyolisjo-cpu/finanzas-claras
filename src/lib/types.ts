@@ -66,3 +66,12 @@ export type ImportFirestore = Omit<Import, 'id' | 'createdAt' | 'statementStartD
   statementStartDate?: Timestamp;
   statementEndDate?: Timestamp;
 };
+
+export type BusinessType = 'productos' | 'servicios' | 'mixto';
+
+export type UserProfile = {
+  userId: string;
+  businessType: BusinessType;
+  hasEmployees: boolean;
+  selectedAt: Date;
+};
