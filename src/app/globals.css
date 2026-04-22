@@ -2,94 +2,126 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ByOlisJo Design System — Finanzas Claras */
+
 @layer base {
   :root {
-    --background: 240 8% 97%;
-    --foreground: 222 47% 11%;
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
-    --primary: 66 89% 69%;
-    --primary-foreground: 225 14% 20%;
-    --secondary: 215 14% 34%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 215 14% 34%;
-    --muted-foreground: 215 14% 34%;
-    --accent: 215 14% 34%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 66 89% 69%;
+    /* ── Superficies ── */
+    --bj-canvas:          42 55% 91%;
+    --bj-surface:         43 67% 95%;
+    --bj-elevated:        43 100% 98%;
+    --bj-sidebar:         240 5% 8%;
+    --bj-row-alt:         44 48% 88%;
+    --bj-hover:           44 45% 85%;
 
-    /* Chart colors */
-    --chart-1: 66 89% 69%;
-    --chart-2: 142 67% 41%;
-    --chart-3: 0 72% 51%;
-    --chart-4: 28 80% 56%;
-    --chart-5: 280 65% 55%;
+    /* ── Bordes ── */
+    --bj-border-subtle:   42 30% 86%;
+    --bj-border-medium:   42 20% 76%;
+    --bj-border-strong:   240 5% 8%;
 
-    /* Custom colors */
-    --positive: 142 67% 41%;
-    --negative: 0 72% 51%;
+    /* ── Tipografía ── */
+    --bj-text-primary:    240 5% 8%;
+    --bj-text-secondary:  41 9% 27%;
+    --bj-text-tertiary:   45 9% 44%;
+    --bj-text-disabled:   41 10% 62%;
+    --bj-text-on-dark:    44 49% 90%;
 
-    /* Sidebar */
-    --sidebar-background: 240 29% 45%;
-    --sidebar-foreground: 210 40% 98%;
-    --sidebar-primary: 210 40% 98%;
-    --sidebar-primary-foreground: 240 29% 45%;
-    --sidebar-accent: 240 29% 40%;
-    --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 240 29% 35%;
-    --sidebar-ring: 66 89% 69%;
+    /* ── Marca ── */
+    --bj-brand:           354 42% 30%;
+    --bj-brand-hover:     354 46% 23%;
+    --bj-premium:         39 32% 59%;
+
+    /* ── Estados financieros ── */
+    --bj-positive:        142 40% 30%;
+    --bj-negative:        7 55% 40%;
+    --bj-warning:         38 60% 45%;
+    --bj-info:            200 29% 32%;
+
+    /* ── Tokens shadcn mapeados a ByOlisJo ── */
+    --background:          var(--bj-canvas);
+    --foreground:          var(--bj-text-primary);
+    --card:                var(--bj-surface);
+    --card-foreground:     var(--bj-text-primary);
+    --popover:             var(--bj-elevated);
+    --popover-foreground:  var(--bj-text-primary);
+    --primary:             var(--bj-sidebar);
+    --primary-foreground:  var(--bj-text-on-dark);
+    --secondary:           var(--bj-row-alt);
+    --secondary-foreground: var(--bj-text-primary);
+    --muted:               var(--bj-row-alt);
+    --muted-foreground:    var(--bj-text-tertiary);
+    --accent:              var(--bj-hover);
+    --accent-foreground:   var(--bj-text-primary);
+    --destructive:         var(--bj-negative);
+    --destructive-foreground: var(--bj-text-on-dark);
+    --border:              var(--bj-border-subtle);
+    --input:               var(--bj-border-medium);
+    --ring:                var(--bj-brand);
+    --radius:              4px;
+
+    /* ── Charts ── */
+    --chart-1: var(--bj-brand);
+    --chart-2: var(--bj-sidebar);
+    --chart-3: var(--bj-premium);
+    --chart-4: var(--bj-positive);
+    --chart-5: var(--bj-text-tertiary);
+    --chart-6: var(--bj-negative);
+
+    /* ── Custom helpers ── */
+    --positive: var(--bj-positive);
+    --negative: var(--bj-negative);
+
+    /* ── Sidebar ── */
+    --sidebar-background:         var(--bj-sidebar);
+    --sidebar-foreground:         var(--bj-text-on-dark);
+    --sidebar-primary:            var(--bj-brand);
+    --sidebar-primary-foreground: var(--bj-text-on-dark);
+    --sidebar-accent:             240 5% 14%;
+    --sidebar-accent-foreground:  var(--bj-text-on-dark);
+    --sidebar-border:             240 5% 15%;
+    --sidebar-ring:               var(--bj-brand);
   }
- 
+
+  /* ByOlisJo es un sistema de tema único — sin modo oscuro separado */
   .dark {
-    --background: 240 8% 97%;
-    --foreground: 222 47% 11%;
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
-    --primary: 66 89% 69%;
-    --primary-foreground: 225 14% 20%;
-    --secondary: 215 14% 34%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 215 14% 34%;
-    --muted-foreground: 215 14% 34%;
-    --accent: 215 14% 34%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 66 89% 69%;
-
-    /* Chart colors */
-    --chart-1: 66 89% 69%;
-    --chart-2: 142 67% 41%;
-    --chart-3: 0 63% 31%;
-    --chart-4: 28 80% 56%;
-    --chart-5: 280 65% 55%;
-
-    /* Custom colors */
-    --positive: 142 67% 41%;
-    --negative: 0 63% 31%;
-
-    /* Sidebar */
-    --sidebar-background: 240 29% 45%;
-    --sidebar-foreground: 210 40% 98%;
-    --sidebar-primary: 210 40% 98%;
-    --sidebar-primary-foreground: 240 29% 45%;
-    --sidebar-accent: 240 29% 40%;
-    --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 240 29% 35%;
-    --sidebar-ring: 66 89% 69%;
+    --background:          var(--bj-canvas);
+    --foreground:          var(--bj-text-primary);
+    --card:                var(--bj-surface);
+    --card-foreground:     var(--bj-text-primary);
+    --popover:             var(--bj-elevated);
+    --popover-foreground:  var(--bj-text-primary);
+    --primary:             var(--bj-sidebar);
+    --primary-foreground:  var(--bj-text-on-dark);
+    --secondary:           var(--bj-row-alt);
+    --secondary-foreground: var(--bj-text-primary);
+    --muted:               var(--bj-row-alt);
+    --muted-foreground:    var(--bj-text-tertiary);
+    --accent:              var(--bj-hover);
+    --accent-foreground:   var(--bj-text-primary);
+    --destructive:         var(--bj-negative);
+    --destructive-foreground: var(--bj-text-on-dark);
+    --border:              var(--bj-border-subtle);
+    --input:               var(--bj-border-medium);
+    --ring:                var(--bj-brand);
+    --chart-1: var(--bj-brand);
+    --chart-2: var(--bj-sidebar);
+    --chart-3: var(--bj-premium);
+    --chart-4: var(--bj-positive);
+    --chart-5: var(--bj-text-tertiary);
+    --chart-6: var(--bj-negative);
+    --positive: var(--bj-positive);
+    --negative: var(--bj-negative);
+    --sidebar-background:         var(--bj-sidebar);
+    --sidebar-foreground:         var(--bj-text-on-dark);
+    --sidebar-primary:            var(--bj-brand);
+    --sidebar-primary-foreground: var(--bj-text-on-dark);
+    --sidebar-accent:             240 5% 14%;
+    --sidebar-accent-foreground:  var(--bj-text-on-dark);
+    --sidebar-border:             240 5% 15%;
+    --sidebar-ring:               var(--bj-brand);
   }
 }
- 
+
 @layer base {
   * {
     @apply border-border;
@@ -99,11 +131,17 @@
   }
 }
 
-/* Custom Financial Colors */
-.text-positive {
-  color: hsl(var(--positive));
-}
+/* ── Helpers financieros ── */
+.text-positive  { color: hsl(var(--bj-positive)); }
+.text-negative  { color: hsl(var(--bj-negative)); }
+.text-warning   { color: hsl(var(--bj-warning)); }
+.bg-positive-soft { background-color: hsl(var(--bj-positive) / 0.08); }
+.bg-negative-soft { background-color: hsl(var(--bj-negative) / 0.08); }
+.bg-warning-soft  { background-color: hsl(var(--bj-warning) / 0.10); }
+.bg-brand-soft    { background-color: hsl(var(--bj-brand) / 0.12); }
 
-.text-negative {
-  color: hsl(var(--negative));
+/* ── Números financieros ── */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
