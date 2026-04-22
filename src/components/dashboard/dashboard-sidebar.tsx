@@ -37,7 +37,7 @@ const NAV_MAIN = [
   { href: '/dashboard',                 label: 'Inicio',                    icon: Home,          exact: true  },
   { href: '/dashboard/transactions',    label: 'Movimientos',               icon: Wallet,        exact: false },
   { href: '/dashboard/reconciliation',  label: 'Importar Estado de Cuenta', icon: Upload,        exact: false },
-  { href: '/dashboard/analysis',        label: 'Análisis',                  icon: TrendingUp,    exact: false },
+  { href: '/dashboard/analysis',        label: 'Reporte',                   icon: TrendingUp,    exact: false },
   { href: '/dashboard/budgets',         label: 'Presupuestos',              icon: Target,        exact: false },
 ];
 
