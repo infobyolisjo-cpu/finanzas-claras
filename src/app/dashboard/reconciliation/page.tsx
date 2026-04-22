@@ -1022,7 +1022,7 @@ function PdfAnalysisTab() {
         }
         const rows = Array.from(rowMap.entries())
           .sort(([a], [b]) => b - a)
-          .map(([, cells]) => cells.sort((c1, c2) => c1.x - c2.x).map(c => c.str).join('\t'));
+          .map(([, cells]) => cells.sort((c1, c2) => c1.x - c2.x).map(c => `@${c.x}:${c.str}`).join('\t'));
         textParts.push(...rows);
       }
 

@@ -26,6 +26,93 @@ function dbg(...args: any[]) {
   }
 }
 
+// ── X-coordinate encoding utilities ─────────────────────────────────────────
+// Rows from reconciliation/page.tsx are encoded as "@X:content\t@X:content…"
+// where X is the rounded horizontal PDF coordinate of each text item.
+
+function stripXEncoding(text: string): string {
+  return text.replace(/@\d+:/g, '');
+}
+
+type CellX = { x: number; str: string };
+
+function parseCells(line: string): CellX[] {
+  return line.split('\t').flatMap(cell => {
+    const m = /^@(\d+):(.*)$/.exec(cell);
+    const c = m ? { x: parseInt(m[1]), str: m[2] } : { x: 0, str: cell };
+    return c.str.length > 0 ? [c] : [];
+  });
+}
+
+// ── WF column-position detection ─────────────────────────────────────────────
+// Finds the X positions of "Deposits/Credits", "Withdrawals/Debits", and
+// "Balance" columns by scanning the transaction-table header row.
+// The header row is the first row where BOTH a deposit label AND a withdrawal
+// label appear on the same Y (i.e., in the same tab-separated row).
+
+type WfColumns = { depositX: number; withdrawalX: number; balanceX: number };
+
+function detectWfColumns(lines: string[]): WfColumns | null {
+  for (const line of lines) {
+    const cells = parseCells(line);
+    const depCell = cells.find(c => /^deposits?/i.test(c.str.trim()));
+    const witCell = cells.find(c => /^withdrawals?/i.test(c.str.trim()));
+    if (!depCell || !witCell || depCell.x >= witCell.x) continue;
+
+    const balCell = cells.find(c => /balance/i.test(c.str) && c.x > witCell.x);
+    dbg('WF column header found →', { depX: depCell.x, witX: witCell.x, balX: balCell?.x });
+    return {
+      depositX:    depCell.x,
+      withdrawalX: witCell.x,
+      balanceX:    balCell?.x ?? witCell.x + 80,
+    };
+  }
+  return null;
+}
+
+// Classify a cell's X position into its financial column.
+function classifyByColumn(x: number, cols: WfColumns): 'deposit' | 'withdrawal' | 'balance' | 'other' {
+  if (x < cols.depositX - 50) return 'other';  // description / date area
+  const midDW = (cols.depositX + cols.withdrawalX) / 2;
+  const midWB = (cols.withdrawalX + cols.balanceX) / 2;
+  if (x >= midWB) return 'balance';
+  if (x >= midDW) return 'withdrawal';
+  return 'deposit';
+}
+
+// Sum deposits and withdrawals using column-position classification.
+function parseTotalsXAware(text: string): { deposits: number; withdrawals: number } | null {
+  const lines = text.split('\n');
+  const cols = detectWfColumns(lines);
+  if (!cols) return null;
+
+  const SKIP = ['TOTAL', 'BALANCE', 'BEGINNING', 'ENDING', 'SUMMARY', 'OPENING', 'CLOSING'];
+  let deposits = 0, withdrawals = 0;
+
+  for (const line of lines) {
+    const cells = parseCells(line);
+    if (!cells.length) continue;
+    if (!TX_DATE_RE.test(cells[0].str.trim())) continue;
+    const upper = cells.map(c => c.str).join(' ').toUpperCase();
+    if (SKIP.some(w => upper.includes(w))) continue;
+
+    for (const cell of cells.slice(1)) {
+      const n = parseAmount(cell.str);
+      if (n === null || n < 0.01 || n > 9_999_999) continue;
+      switch (classifyByColumn(cell.x, cols)) {
+        case 'deposit':    deposits    += n; break;
+        case 'withdrawal': withdrawals += n; break;
+      }
+    }
+  }
+
+  if (deposits === 0 && withdrawals === 0) return null;
+  return {
+    deposits:    Math.round(deposits    * 100) / 100,
+    withdrawals: Math.round(withdrawals * 100) / 100,
+  };
+}
+
 // ── Scanned-PDF guard ────────────────────────────────────────────────────────
 
 export function checkTextQuality(text: string): string | null {
@@ -270,19 +357,27 @@ type TxRow = { date: string; description: string; amounts: number[] };
 const TX_DATE_RE = /^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/;
 
 function isTxLine(line: string): boolean {
-  return TX_DATE_RE.test(line.trim()) && /\$?\s*[\d,]+\.\d{2}/.test(line);
+  const plain = stripXEncoding(line);
+  const first = plain.split('\t')[0].trim();
+  return TX_DATE_RE.test(first) && /\$?\s*[\d,]+\.\d{2}/.test(plain);
 }
 
 function parseTxRow(line: string): TxRow | null {
-  const cols = line.split('\t').map(c => c.trim());
-  if (!cols.length) return null;
-  const dateM = TX_DATE_RE.exec(cols[0]);
+  const cells = parseCells(line);
+  if (!cells.length) return null;
+  const dateM = TX_DATE_RE.exec(cells[0].str.trim());
   if (!dateM) return null;
 
-  const description = cols.slice(1).filter(c => c && !/^[\d,.\$]+$/.test(c)).join(' ').slice(0, 80);
+  const description = cells.slice(1)
+    .filter(c => c.str.trim() && !/^[\d,.$]+$/.test(c.str.trim()))
+    .map(c => c.str.trim())
+    .join(' ')
+    .slice(0, 80);
+
+  // Amounts sorted left→right by X (cells already sorted; last = running balance)
   const amounts: number[] = [];
-  for (const col of cols.slice(1)) {
-    const n = parseAmount(col);
+  for (const cell of cells.slice(1)) {
+    const n = parseAmount(cell.str);
     if (n !== null && Math.abs(n) >= 0.01 && Math.abs(n) <= 9_999_999) amounts.push(n);
   }
 
@@ -296,46 +391,60 @@ export function parseTotals(text: string): {
   expectedCount?: number;
   usedFallback: boolean;
 } {
-  // Priority 1: Wells Fargo Account Summary box (exact, declared by bank)
-  const wf = parseWellsFargoSummary(text);
+  // Strip @X: encoding for all functions that don't need column positions.
+  const plain = stripXEncoding(text);
+
+  // Priority 1: Wells Fargo Account Summary box (exact counts + amounts from bank)
+  const wf = parseWellsFargoSummary(plain);
   if (wf && (wf.deposits > 0 || wf.withdrawals > 0)) {
-    const deposits    = wf.deposits;
-    const withdrawals = wf.withdrawals;
-    const fees        = wf.fees;
+    dbg('WF summary box →', wf.deposits, wf.withdrawals, wf.fees);
     return {
       usedFallback: false,
       expectedCount: wf.depositsCount + wf.withdrawalsCount + wf.feesCount,
       result: {
-        deposits,
-        withdrawals,
-        fees,
-        net: Math.round((deposits - withdrawals - fees) * 100) / 100,
+        deposits:    wf.deposits,
+        withdrawals: wf.withdrawals,
+        fees:        wf.fees,
+        net: Math.round((wf.deposits - wf.withdrawals - wf.fees) * 100) / 100,
       },
     };
   }
 
-  // Priority 2: Generic labeled totals (English + Spanish)
-  // Require BOTH sides to avoid partial matches (e.g. WF has "Total withdrawals" label
-  // but no matching deposit label, which would return deposits=$0 incorrectly).
+  // Priority 2: X-column-aware (WF / Chase style — uses column header X positions).
+  // Most accurate when the transaction table has "Deposits/Credits" and
+  // "Withdrawals/Debits" column headers, even if no account-summary box is found.
+  const xr = parseTotalsXAware(text);
+  if (xr) {
+    const fees = findLabeledAmount(plain, FEE_LABELS);
+    const { opening, ending } = detectOpeningEndingBalance(plain);
+    const net = (opening !== null && ending !== null)
+      ? Math.round((ending  - opening) * 100) / 100
+      : Math.round((xr.deposits - xr.withdrawals - fees) * 100) / 100;
+    dbg('X-column totals →', xr.deposits, xr.withdrawals, fees, net);
+    return {
+      usedFallback: false,
+      result: { deposits: xr.deposits, withdrawals: xr.withdrawals, fees, net },
+    };
+  }
+
+  // Priority 3: Generic labeled totals (Spanish + English) — require BOTH sides.
   {
-    const dep = findLabeledAmount(text, DEPOSIT_LABELS);
-    const wit = findLabeledAmount(text, WITHDRAWAL_LABELS);
-    const fee = findLabeledAmount(text, FEE_LABELS);
+    const dep = findLabeledAmount(plain, DEPOSIT_LABELS);
+    const wit = findLabeledAmount(plain, WITHDRAWAL_LABELS);
+    const fee = findLabeledAmount(plain, FEE_LABELS);
     if (dep > 0 && wit > 0) {
       dbg('generic labeled totals →', dep, wit, fee);
       return {
         usedFallback: false,
         result: {
-          deposits: dep,
-          withdrawals: wit,
-          fees: fee,
+          deposits: dep, withdrawals: wit, fees: fee,
           net: Math.round((dep - wit - fee) * 100) / 100,
         },
       };
     }
   }
 
-  // Priority 3: Heuristic — scan individual transaction lines
+  // Priority 4: Heuristic line scan
   dbg('falling back to heuristic line scan');
   const SKIP = ['FECHA','SALDO','TOTAL','CONCEPTO','DATE','BALANCE','DESCRIPTION',
                 'BEGINNING','ENDING','SUMMARY','OPENING','CLOSING'];
@@ -343,79 +452,62 @@ export function parseTotals(text: string): {
   const rows: TxRow[] = [];
   for (const line of text.split('\n')) {
     if (!isTxLine(line)) continue;
-    const upper = line.toUpperCase();
+    const upper = stripXEncoding(line).toUpperCase();
     if (SKIP.some(w => upper.includes(w))) continue;
     const row = parseTxRow(line);
     if (row) rows.push(row);
   }
+  dbg('heuristic: rows found:', rows.length);
 
-  dbg('heuristic: transaction rows found:', rows.length);
+  let deposits = 0, withdrawals = 0;
+  const fees = findLabeledAmount(plain, FEE_LABELS);
 
-  let deposits = 0;
-  let withdrawals = 0;
-  const fees = findLabeledAmount(text, FEE_LABELS);
-
-  // WF-style balance tracking: when all amounts are positive, the last amount
-  // in each row is the running balance. Compare consecutive balances to infer direction.
+  // Balance-direction sub-heuristic: all-positive amounts → track running balance
   const allPositive = rows.length > 0 && rows.every(r => r.amounts.every(a => a >= 0));
   if (allPositive) {
-    const { opening } = detectOpeningEndingBalance(text);
-    let prevBal: number | null = opening;
-    let balanceTracked = false;
-
+    const { opening: op0 } = detectOpeningEndingBalance(plain);
+    let prevBal: number | null = op0;
+    let tracked = false;
     for (const row of rows) {
       const n = row.amounts.length;
       if (n === 0) continue;
-      const bal = row.amounts[n - 1]; // last = running balance
+      const bal = row.amounts[n - 1];
       if (n >= 2 && prevBal !== null) {
         const txAmt = row.amounts[0];
-        if (bal > prevBal) { deposits += txAmt; balanceTracked = true; }
-        else if (bal < prevBal) { withdrawals += txAmt; balanceTracked = true; }
+        if (bal > prevBal) { deposits    += txAmt; tracked = true; }
+        else if (bal < prevBal) { withdrawals += txAmt; tracked = true; }
       }
       prevBal = bal;
     }
-
-    if (balanceTracked) {
+    if (tracked) {
       deposits    = Math.round(deposits    * 100) / 100;
       withdrawals = Math.round(withdrawals * 100) / 100;
-      dbg('balance-direction heuristic →', deposits, withdrawals);
-
-      // Use opening/ending net if available (more accurate than summing tx amounts)
-      const { opening: op, ending: en } = detectOpeningEndingBalance(text);
-      const net = (op !== null && en !== null)
-        ? Math.round((en - op) * 100) / 100
+      dbg('balance-direction →', deposits, withdrawals);
+      const { opening, ending } = detectOpeningEndingBalance(plain);
+      const net = (opening !== null && ending !== null)
+        ? Math.round((ending - opening) * 100) / 100
         : Math.round((deposits - withdrawals - fees) * 100) / 100;
-
       return { usedFallback: true, result: { deposits, withdrawals, fees, net } };
     }
   }
 
-  // Fallback for sign-based statements (negative = withdrawal)
+  // Sign-based sub-heuristic (negative amounts = withdrawal)
   for (const row of rows) {
-    if (row.amounts.length === 0) continue;
-    const txAmt = row.amounts[0];
-    if (txAmt > 0) deposits += txAmt;
-    else withdrawals += Math.abs(txAmt);
+    if (!row.amounts.length) continue;
+    const a = row.amounts[0];
+    if (a > 0) deposits    += a;
+    else       withdrawals += Math.abs(a);
   }
-
   deposits    = Math.round(deposits    * 100) / 100;
   withdrawals = Math.round(withdrawals * 100) / 100;
-  dbg('sign-based heuristic →', deposits, withdrawals);
+  dbg('sign-based →', deposits, withdrawals);
 
-  // Priority 4: Opening / Ending balance net override
-  const { opening, ending } = detectOpeningEndingBalance(text);
+  const { opening, ending } = detectOpeningEndingBalance(plain);
   const net = (opening !== null && ending !== null)
     ? Math.round((ending - opening) * 100) / 100
     : Math.round((deposits - withdrawals - fees) * 100) / 100;
 
-  if (opening !== null && ending !== null) {
-    dbg('balance net fallback →', net, 'opening:', opening, 'ending:', ending);
-  }
-
-  return {
-    usedFallback: true,
-    result: { deposits, withdrawals, fees, net },
-  };
+  return { usedFallback: true, result: { deposits, withdrawals, fees, net } };
 }
 
 // ── Transaction count ────────────────────────────────────────────────────────
@@ -496,11 +588,13 @@ function buildWarning(
 // ── Main entry point ─────────────────────────────────────────────────────────
 
 export function parsePdfText(text: string): PdfSummary & { error?: string } {
-  // Always log first 1500 chars so devs can inspect coordinate-extracted text in browser console
-  console.log('[pdf-parser] extracted text sample (first 1500 chars):\n', text.slice(0, 1500));
+  const plain = stripXEncoding(text);
+
+  // Log plain-text sample so devs can inspect extraction in browser DevTools
+  console.log('[pdf-parser] plain text sample (first 1500 chars):\n', plain.slice(0, 1500));
   console.log('[pdf-parser] total lines:', text.split('\n').length);
 
-  const qualityError = checkTextQuality(text);
+  const qualityError = checkTextQuality(plain);
   if (qualityError) {
     return {
       bankName: null, periodStart: null, periodEnd: null,
@@ -510,20 +604,22 @@ export function parsePdfText(text: string): PdfSummary & { error?: string } {
     };
   }
 
+  // parseTotals receives the X-encoded text so it can use column positions.
+  // All other functions receive the plain (stripped) text.
   const { result: totals, expectedCount, usedFallback } = parseTotals(text);
-  const transactionCount = countTransactions(text);
+  const transactionCount = countTransactions(plain);
 
   const { incomplete, parseWarning } = buildWarning(transactionCount, expectedCount, usedFallback);
 
   dbg('final summary →', { totals, transactionCount, expectedCount, incomplete });
 
   return {
-    bankName: detectBank(text),
-    ...detectPeriod(text),
+    bankName:        detectBank(plain),
+    ...detectPeriod(plain),
     totals,
     transactionCount,
     expectedCount,
-    topDescriptions: extractTopDescriptions(text),
+    topDescriptions: extractTopDescriptions(plain),
     parseWarning,
     incomplete,
   };
