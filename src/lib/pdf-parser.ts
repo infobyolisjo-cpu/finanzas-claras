@@ -44,73 +44,108 @@ function parseCells(line: string): CellX[] {
   });
 }
 
-// ── WF column-position detection ─────────────────────────────────────────────
-// Finds the X positions of "Deposits/Credits", "Withdrawals/Debits", and
-// "Balance" columns by scanning the transaction-table header row.
-// The header row is the first row where BOTH a deposit label AND a withdrawal
-// label appear on the same Y (i.e., in the same tab-separated row).
+// ── X-column cluster detection ────────────────────────────────────────────────
+// Collects all numeric amounts from transaction rows with their X coordinates,
+// then clusters them by horizontal position using gap-based clustering.
+//
+// WF layout (left → right): Date | Description | Deposits | Withdrawals | Balance
+//
+// The balance column appears in nearly every row (running balance), so it forms
+// the rightmost and densest cluster.  Among the remaining clusters, deposits are
+// to the LEFT of withdrawals — so we take the two rightmost non-balance clusters:
+//   second-to-rightmost = deposits,  rightmost = withdrawals.
+// Any leftmost clusters from description-area numbers are automatically skipped.
 
-type WfColumns = { depositX: number; withdrawalX: number; balanceX: number };
-
-function detectWfColumns(lines: string[]): WfColumns | null {
-  for (const line of lines) {
-    const cells = parseCells(line);
-    const depCell = cells.find(c => /^deposits?/i.test(c.str.trim()));
-    const witCell = cells.find(c => /^withdrawals?/i.test(c.str.trim()));
-    if (!depCell || !witCell || depCell.x >= witCell.x) continue;
-
-    const balCell = cells.find(c => /balance/i.test(c.str) && c.x > witCell.x);
-    dbg('WF column header found →', { depX: depCell.x, witX: witCell.x, balX: balCell?.x });
-    return {
-      depositX:    depCell.x,
-      withdrawalX: witCell.x,
-      balanceX:    balCell?.x ?? witCell.x + 80,
-    };
-  }
-  return null;
-}
-
-// Classify a cell's X position into its financial column.
-function classifyByColumn(x: number, cols: WfColumns): 'deposit' | 'withdrawal' | 'balance' | 'other' {
-  if (x < cols.depositX - 50) return 'other';  // description / date area
-  const midDW = (cols.depositX + cols.withdrawalX) / 2;
-  const midWB = (cols.withdrawalX + cols.balanceX) / 2;
-  if (x >= midWB) return 'balance';
-  if (x >= midDW) return 'withdrawal';
-  return 'deposit';
-}
-
-// Sum deposits and withdrawals using column-position classification.
-function parseTotalsXAware(text: string): { deposits: number; withdrawals: number } | null {
+function parseTotalsXCluster(text: string): { deposits: number; withdrawals: number } | null {
   const lines = text.split('\n');
-  const cols = detectWfColumns(lines);
-  if (!cols) return null;
-
   const SKIP = ['TOTAL', 'BALANCE', 'BEGINNING', 'ENDING', 'SUMMARY', 'OPENING', 'CLOSING'];
-  let deposits = 0, withdrawals = 0;
+  const GAP  = 30; // pt gap that separates distinct columns
+
+  type Pt = { x: number; amount: number };
+  const pts: Pt[] = [];
 
   for (const line of lines) {
     const cells = parseCells(line);
-    if (!cells.length) continue;
+    if (cells.length < 2) continue;
     if (!TX_DATE_RE.test(cells[0].str.trim())) continue;
-    const upper = cells.map(c => c.str).join(' ').toUpperCase();
-    if (SKIP.some(w => upper.includes(w))) continue;
+    if (SKIP.some(w => cells.map(c => c.str).join(' ').toUpperCase().includes(w))) continue;
 
     for (const cell of cells.slice(1)) {
+      // Require a decimal point — filters check numbers, card digits, ref codes
+      if (!cell.str.includes('.')) continue;
       const n = parseAmount(cell.str);
       if (n === null || n < 0.01 || n > 9_999_999) continue;
-      switch (classifyByColumn(cell.x, cols)) {
-        case 'deposit':    deposits    += n; break;
-        case 'withdrawal': withdrawals += n; break;
-      }
+      pts.push({ x: cell.x, amount: n });
+      console.log(`[pdf-cluster] x=${cell.x} $${n} row="${cells[0].str.trim()}"`);
     }
   }
 
+  console.log(`[pdf-cluster] ${pts.length} data points collected`);
+  if (pts.length < 5) return null;
+
+  // Gap-based clustering: group consecutive unique X values separated by < GAP
+  const uniqueX = [...new Set(pts.map(p => p.x))].sort((a, b) => a - b);
+  const groups: number[][] = [[uniqueX[0]]];
+  for (let i = 1; i < uniqueX.length; i++) {
+    if (uniqueX[i] - uniqueX[i - 1] > GAP) groups.push([]);
+    groups[groups.length - 1].push(uniqueX[i]);
+  }
+
+  const clusters = groups.map(g => ({
+    center: g.reduce((a, b) => a + b, 0) / g.length,
+    count:  0,
+    total:  0,
+  }));
+
+  // Assign each point to its nearest cluster center
+  for (const pt of pts) {
+    let best = 0, bestDist = Infinity;
+    for (let i = 0; i < clusters.length; i++) {
+      const d = Math.abs(pt.x - clusters[i].center);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    clusters[best].count++;
+    clusters[best].total += pt.amount;
+  }
+
+  console.log('[pdf-cluster] clusters:', clusters.map((c, i) =>
+    `[${i}] x≈${Math.round(c.center)} n=${c.count} sum=$${c.total.toFixed(2)}`
+  ).join(' | '));
+
+  if (clusters.length < 3) {
+    console.log('[pdf-cluster] fewer than 3 clusters — cannot separate all three columns');
+    return null;
+  }
+
+  // Balance = rightmost cluster (skip it)
+  const balIdx = clusters.length - 1;
+  console.log(`[pdf-cluster] balance cluster [${balIdx}] x≈${Math.round(clusters[balIdx].center)} n=${clusters[balIdx].count}`);
+
+  // Remaining clusters sorted left→right; take rightmost 2 = withdrawals + deposits
+  // (any far-left description-noise clusters are automatically ignored)
+  const txClusters = clusters
+    .map((c, i) => ({ ...c, i }))
+    .filter(c => c.i !== balIdx)
+    .sort((a, b) => a.center - b.center);
+
+  if (txClusters.length < 2) {
+    console.log('[pdf-cluster] not enough tx clusters after excluding balance');
+    return null;
+  }
+
+  // Deposits left of withdrawals in WF layout
+  const depCluster = txClusters[txClusters.length - 2];
+  const witCluster = txClusters[txClusters.length - 1];
+
+  console.log(`[pdf-cluster] deposits [${depCluster.i}] x≈${Math.round(depCluster.center)} → $${depCluster.total.toFixed(2)}`);
+  console.log(`[pdf-cluster] withdrawals [${witCluster.i}] x≈${Math.round(witCluster.center)} → $${witCluster.total.toFixed(2)}`);
+
+  const deposits    = Math.round(depCluster.total * 100) / 100;
+  const withdrawals = Math.round(witCluster.total * 100) / 100;
+
   if (deposits === 0 && withdrawals === 0) return null;
-  return {
-    deposits:    Math.round(deposits    * 100) / 100,
-    withdrawals: Math.round(withdrawals * 100) / 100,
-  };
+  console.log(`[pdf-cluster] FINAL deposits=${deposits} withdrawals=${withdrawals}`);
+  return { deposits, withdrawals };
 }
 
 // ── Scanned-PDF guard ────────────────────────────────────────────────────────
@@ -394,9 +429,12 @@ export function parseTotals(text: string): {
   // Strip @X: encoding for all functions that don't need column positions.
   const plain = stripXEncoding(text);
 
-  // Priority 1: Wells Fargo Account Summary box (exact counts + amounts from bank)
+  // Priority 1: Wells Fargo Account Summary box (exact counts + amounts from bank).
+  // Require BOTH deposits AND withdrawals to be > 0 — if only one side matched,
+  // the summary regex likely fired on the wrong row; fall through to clustering.
   const wf = parseWellsFargoSummary(plain);
-  if (wf && (wf.deposits > 0 || wf.withdrawals > 0)) {
+  console.log('[pdf-parser] WF summary box result:', wf ? `dep=${wf.deposits} wit=${wf.withdrawals}` : 'null');
+  if (wf && wf.deposits > 0 && wf.withdrawals > 0) {
     dbg('WF summary box →', wf.deposits, wf.withdrawals, wf.fees);
     return {
       usedFallback: false,
@@ -410,17 +448,17 @@ export function parseTotals(text: string): {
     };
   }
 
-  // Priority 2: X-column-aware (WF / Chase style — uses column header X positions).
-  // Most accurate when the transaction table has "Deposits/Credits" and
-  // "Withdrawals/Debits" column headers, even if no account-summary box is found.
-  const xr = parseTotalsXAware(text);
+  // Priority 2: X-column cluster detection.
+  // Groups all numeric amounts in transaction rows by X position;
+  // identifies balance column (rightmost), then deposits and withdrawals.
+  const xr = parseTotalsXCluster(text);
   if (xr) {
     const fees = findLabeledAmount(plain, FEE_LABELS);
     const { opening, ending } = detectOpeningEndingBalance(plain);
     const net = (opening !== null && ending !== null)
       ? Math.round((ending  - opening) * 100) / 100
       : Math.round((xr.deposits - xr.withdrawals - fees) * 100) / 100;
-    dbg('X-column totals →', xr.deposits, xr.withdrawals, fees, net);
+    dbg('X-cluster totals →', xr.deposits, xr.withdrawals, fees, net);
     return {
       usedFallback: false,
       result: { deposits: xr.deposits, withdrawals: xr.withdrawals, fees, net },
