@@ -39,14 +39,47 @@ async function getUserId(): Promise<string | null> {
 
 // ===== Helpers =====
 
-const GEMINI_MODELS = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'];
+const GEMINI_MODELS = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+async function uploadPdfToGemini(pdfBase64: string, apiKey: string): Promise<string | null> {
+  try {
+    const buffer = Buffer.from(pdfBase64, 'base64');
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/pdf',
+          'X-Goog-Upload-Protocol': 'raw',
+          'X-Goog-Upload-Header-Content-Type': 'application/pdf',
+          'Content-Length': buffer.length.toString(),
+        },
+        body: buffer,
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.file?.uri ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function callGemini(prompt: string, pdfBase64?: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY no configurada.');
 
-  const parts: any[] = [];
+  // Build parts — prefer File API for PDFs to avoid large inline payloads
+  let fileUri: string | null = null;
   if (pdfBase64) {
+    fileUri = await uploadPdfToGemini(pdfBase64, apiKey);
+  }
+
+  const parts: any[] = [];
+  if (fileUri) {
+    parts.push({ fileData: { mimeType: 'application/pdf', fileUri } });
+  } else if (pdfBase64) {
     parts.push({ inlineData: { mimeType: 'application/pdf', data: pdfBase64 } });
   }
   parts.push({ text: prompt });
@@ -54,7 +87,7 @@ async function callGemini(prompt: string, pdfBase64?: string): Promise<string> {
   let lastError = '';
   for (const model of GEMINI_MODELS) {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      `${GEMINI_BASE}/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -76,7 +109,7 @@ async function callGemini(prompt: string, pdfBase64?: string): Promise<string> {
     return data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   }
 
-  throw new Error(`Todos los modelos de Gemini no están disponibles. Intenta de nuevo en unos minutos. (${lastError})`);
+  throw new Error(`Servicio de IA no disponible. Intenta de nuevo en unos minutos. (${lastError})`);
 }
 
 // ===== AI actions =====
