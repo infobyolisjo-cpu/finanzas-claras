@@ -42,74 +42,42 @@ async function getUserId(): Promise<string | null> {
 const GEMINI_MODELS = ['gemini-2.0-flash', 'gemini-2.0-flash-lite'];
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-async function uploadPdfToGemini(pdfBase64: string, apiKey: string): Promise<string | null> {
-  try {
-    const buffer = Buffer.from(pdfBase64, 'base64');
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/pdf',
-          'X-Goog-Upload-Protocol': 'raw',
-          'X-Goog-Upload-Header-Content-Type': 'application/pdf',
-          'Content-Length': buffer.length.toString(),
-        },
-        body: buffer,
-      }
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.file?.uri ?? null;
-  } catch {
-    return null;
-  }
-}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function callGemini(prompt: string, pdfBase64?: string): Promise<string> {
+// Text-only Gemini call with exponential backoff across models and retries.
+async function callGemini(prompt: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY no configurada.');
 
-  // Build parts — prefer File API for PDFs to avoid large inline payloads
-  let fileUri: string | null = null;
-  if (pdfBase64) {
-    fileUri = await uploadPdfToGemini(pdfBase64, apiKey);
-  }
+  const parts = [{ text: prompt }];
+  const MAX_ROUNDS = 3;
 
-  const parts: any[] = [];
-  if (fileUri) {
-    parts.push({ fileData: { mimeType: 'application/pdf', fileUri } });
-  } else if (pdfBase64) {
-    parts.push({ inlineData: { mimeType: 'application/pdf', data: pdfBase64 } });
-  }
-  parts.push({ text: prompt });
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    if (round > 0) await sleep(1000 * Math.pow(2, round - 1) + Math.random() * 400);
 
-  let lastError = '';
-  for (const model of GEMINI_MODELS) {
-    const res = await fetch(
-      `${GEMINI_BASE}/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts }] }),
+    for (const model of GEMINI_MODELS) {
+      const res = await fetch(
+        `${GEMINI_BASE}/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts }] }),
+        }
+      );
+
+      if (res.status === 503 || res.status === 429) continue;
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Gemini error (${model}): ${err}`);
       }
-    );
 
-    if (res.status === 503 || res.status === 429) {
-      lastError = `${model} no disponible (${res.status})`;
-      continue;
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     }
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Gemini API error: ${err}`);
-    }
-
-    const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   }
 
-  throw new Error(`Servicio de IA no disponible. Intenta de nuevo en unos minutos. (${lastError})`);
+  throw new Error('El servicio de IA no está disponible en este momento. Intenta de nuevo en unos minutos.');
 }
 
 // ===== AI actions =====
@@ -174,53 +142,67 @@ export async function getStarRecommendationAction(
   return { recommendation: '', score: 0 };
 }
 
-export async function analyzeStatementPdfAction(
-  input: { fileContent: string }
-): Promise<any> {
-  try {
-    const prompt = `Eres un asistente financiero experto. Analiza este estado de cuenta bancario y extrae la siguiente información en formato JSON estricto.
+// Legacy stub — kept so existing imports don't break at compile time.
+export async function analyzeStatementPdfAction(_input: any): Promise<any> {
+  return null;
+}
 
-Responde ÚNICAMENTE con el JSON, sin markdown, sin texto adicional:
+export type AiInsights = {
+  headline: string;
+  summary: string;
+  insights: string[];
+  risks: string[];
+  recommendations: string[];
+};
+
+// Layer 2: receives a small structured summary extracted client-side (no PDF).
+// Returns null gracefully when Gemini is unavailable.
+export async function getAiInsightsAction(input: {
+  bankName: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  totals: { deposits: number; withdrawals: number; fees: number; net: number };
+  transactionCount: number;
+  topDescriptions: string[];
+}): Promise<AiInsights | null> {
+  const fmt = (n: number) =>
+    new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(n);
+
+  const savingsRate =
+    input.totals.deposits > 0
+      ? ((input.totals.net / input.totals.deposits) * 100).toFixed(1)
+      : '0';
+
+  const prompt = `Eres una asesora financiera personal experta. Analiza este resumen financiero y genera insights en español.
+
+Datos del estado de cuenta:
+- Banco: ${input.bankName ?? 'No identificado'}
+- Período: ${input.periodStart && input.periodEnd ? `${input.periodStart} al ${input.periodEnd}` : 'No identificado'}
+- Depósitos totales: ${fmt(input.totals.deposits)}
+- Retiros totales: ${fmt(input.totals.withdrawals)}
+- Comisiones: ${fmt(input.totals.fees)}
+- Saldo neto: ${fmt(input.totals.net)}
+- Tasa de ahorro: ${savingsRate}%
+- Número de movimientos: ${input.transactionCount}
+- Principales conceptos: ${input.topDescriptions.slice(0, 6).join(', ') || 'No identificados'}
+
+Responde ÚNICAMENTE con JSON válido (sin markdown):
 {
-  "bankName": "nombre del banco o null",
-  "periodStart": "YYYY-MM-DD o null",
-  "periodEnd": "YYYY-MM-DD o null",
-  "totals": {
-    "deposits": número total de depósitos/abonos,
-    "withdrawals": número total de retiros/cargos (positivo),
-    "fees": número total de comisiones (positivo),
-    "net": saldo neto (deposits - withdrawals - fees)
-  },
-  "analysis": {
-    "headline": "título corto del análisis en español",
-    "summary": "resumen ejecutivo de 2-3 oraciones en español",
-    "insights": ["insight 1", "insight 2", "insight 3"],
-    "risks": ["riesgo 1", "riesgo 2"],
-    "recommendations": ["recomendación 1", "recomendación 2", "recomendación 3"]
-  }
+  "headline": "título corto y claro (máx 10 palabras)",
+  "summary": "resumen ejecutivo en 2-3 oraciones concretas",
+  "insights": ["insight 1", "insight 2", "insight 3"],
+  "risks": ["riesgo 1", "riesgo 2"],
+  "recommendations": ["recomendación 1", "recomendación 2", "recomendación 3"]
 }`;
 
-    const raw = await callGemini(prompt, input.fileContent);
-
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No se pudo extraer JSON de la respuesta.');
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    return parsed;
-  } catch (e: any) {
-    return {
-      bankName: null,
-      periodStart: null,
-      periodEnd: null,
-      totals: { deposits: 0, withdrawals: 0, fees: 0, net: 0 },
-      analysis: {
-        headline: 'Error al analizar el PDF',
-        summary: e.message ?? 'No se pudo procesar el archivo.',
-        insights: [],
-        risks: [],
-        recommendations: [],
-      },
-    };
+  try {
+    const raw = await callGemini(prompt);
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]);
+    return parsed as AiInsights;
+  } catch {
+    return null;
   }
 }
 

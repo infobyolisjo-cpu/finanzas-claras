@@ -20,10 +20,12 @@ import { es } from 'date-fns/locale';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { TRANSACTION_CATEGORIES } from '@/lib/constants';
 import { useReconciliation } from '@/context/reconciliation-context';
-import { classifyTransactionsAction, analyzeStatementPdfAction, saveImportedTransactionsAction, saveCategorizationChangeAction, saveImportedFileAction } from '@/app/actions';
+import { classifyTransactionsAction, getAiInsightsAction, saveImportedTransactionsAction, saveCategorizationChangeAction, saveImportedFileAction } from '@/app/actions';
+import type { AiInsights } from '@/app/actions';
 import { usePeriod } from '@/context/period-context';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { AnalyzeStatementPdfOutput } from '@/ai/types';
+import { parsePdfText } from '@/lib/pdf-parser';
+import type { PdfSummary } from '@/lib/pdf-parser';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
 
@@ -951,91 +953,114 @@ function CsvImportTab() {
   );
 }
 
+type Layer1Status = 'idle' | 'loading' | 'done' | 'error';
+type Layer2Status = 'idle' | 'loading' | 'done' | 'unavailable';
+
 function PdfAnalysisTab() {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
-  const [fileContent, setFileContent] = useState<string | null>(null); // base64 string
-  const [error, setError] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<AnalyzeStatementPdfOutput | null>(null);
+  const [layer1Status, setLayer1Status] = useState<Layer1Status>('idle');
+  const [layer2Status, setLayer2Status] = useState<Layer2Status>('idle');
+  const [layer1Result, setLayer1Result] = useState<PdfSummary | null>(null);
+  const [layer2Result, setLayer2Result] = useState<AiInsights | null>(null);
+  const [layer1Error, setLayer1Error] = useState<string | null>(null);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
     if (!selectedFile) return;
-
-    setFile(null);
-    setFileContent(null);
-    setError(null);
-    setAnalysisResult(null);
-
     if (selectedFile.type !== 'application/pdf') {
-      setError('Formato de archivo no válido. Por favor, sube un archivo PDF.');
+      toast({ variant: 'destructive', title: 'Formato inválido', description: 'Por favor sube un archivo PDF.' });
       return;
     }
-    
     setFile(selectedFile);
-    
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        const result = e.target?.result as string;
-        // The result includes the Base64 prefix, which we need to extract.
-        const base64 = result.split(',')[1];
-        setFileContent(base64);
-    };
-    reader.readAsDataURL(selectedFile);
+    setLayer1Status('idle');
+    setLayer2Status('idle');
+    setLayer1Result(null);
+    setLayer2Result(null);
+    setLayer1Error(null);
   };
-  
-  const handleAnalyzePdf = async () => {
-    if (!file || !fileContent) {
-        toast({ variant: 'destructive', title: 'Error', description: 'Falta el archivo PDF.' });
-        return;
-    }
-    setIsProcessing(true);
-    setError(null);
-    setAnalysisResult(null);
 
+  const handleAnalyze = async () => {
+    if (!file) return;
+
+    // ── Layer 1: extract text and parse locally (no AI) ──
+    setLayer1Status('loading');
+    setLayer1Result(null);
+    setLayer2Status('idle');
+    setLayer2Result(null);
+    setLayer1Error(null);
+
+    let summary: PdfSummary;
     try {
-        const result = await analyzeStatementPdfAction({ fileContent });
+      const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
+      GlobalWorkerOptions.workerSrc =
+        'https://unpkg.com/pdfjs-dist@4.5.136/build/pdf.worker.min.mjs';
 
-        if (!result || !result.analysis || (result.totals.deposits === 0 && result.totals.withdrawals === 0)) {
-             toast({
-                variant: 'default',
-                title: 'Análisis Completado con Observaciones',
-                description: result?.analysis?.summary || 'No se pudo extraer un resumen numérico, revisa el PDF.'
-            });
-        } else {
-            toast({
-                title: 'Análisis de PDF Completo',
-                description: 'Se ha generado un análisis detallado de tu estado de cuenta.'
-            });
-        }
-        setAnalysisResult(result);
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await getDocument({ data: arrayBuffer }).promise;
 
+      const pages = Math.min(pdf.numPages, 15);
+      const textParts: string[] = [];
+      for (let i = 1; i <= pages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        textParts.push(
+          content.items.map((item: any) => ('str' in item ? item.str : '')).join(' ')
+        );
+      }
+
+      summary = parsePdfText(textParts.join('\n'));
+      setLayer1Result(summary);
+      setLayer1Status('done');
     } catch (e: any) {
-        setError(`Ocurrió un error al analizar el PDF: ${e.message}`);
-        toast({
-            variant: 'destructive',
-            title: 'Error de Análisis',
-            description: e.message
-        });
-    } finally {
-        setIsProcessing(false);
+      setLayer1Status('error');
+      setLayer1Error(e.message ?? 'No se pudo leer el PDF.');
+      return;
     }
-  }
+
+    // ── Layer 2: AI insights from structured summary (small payload) ──
+    setLayer2Status('loading');
+    try {
+      const insights = await getAiInsightsAction({
+        bankName: summary.bankName,
+        periodStart: summary.periodStart,
+        periodEnd: summary.periodEnd,
+        totals: summary.totals,
+        transactionCount: summary.transactionCount,
+        topDescriptions: summary.topDescriptions,
+      });
+
+      if (insights) {
+        setLayer2Result(insights);
+        setLayer2Status('done');
+      } else {
+        setLayer2Status('unavailable');
+      }
+    } catch {
+      setLayer2Status('unavailable');
+    }
+  };
+
+  const fmt = (n: number) => formatCurrency(n);
+  const busy = layer1Status === 'loading' || layer2Status === 'loading';
 
   return (
-    <div className="space-y-8">
-      <Card className="shadow-lg border-primary/20">
+    <div className="space-y-6">
+      {/* Upload card */}
+      <Card>
         <CardHeader>
-          <CardTitle className="text-2xl">Paso 1: Sube tu estado de cuenta</CardTitle>
+          <CardTitle className="text-xl">Sube tu estado de cuenta</CardTitle>
           <CardDescription>
-            Sube un estado de cuenta en formato PDF para que la IA lo analice y te dé una perspectiva financiera.
+            PDF descargado de tu banco. El resumen financiero se genera sin IA;
+            los insights usan IA solo si está disponible.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="relative border-2 border-dashed border-muted-foreground/50 rounded-xl p-8 flex flex-col items-center justify-center space-y-4">
-            <UploadCloud className="h-16 w-16 text-muted-foreground/50" />
-            <p className="text-muted-foreground">Arrastra y suelta tu archivo PDF aquí.</p>
+        <CardContent className="space-y-5">
+          <div className="relative border-2 border-dashed border-muted-foreground/30 rounded-lg p-8 flex flex-col items-center gap-3 hover:border-primary/50 transition-colors">
+            <UploadCloud className="h-12 w-12 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground">
+              {file ? file.name : 'Haz clic o arrastra tu PDF aquí'}
+            </p>
             <input
               type="file"
               accept="application/pdf"
@@ -1043,126 +1068,171 @@ function PdfAnalysisTab() {
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
             />
           </div>
+
           {file && (
-            <div className="text-left text-sm bg-muted/50 p-3 rounded-lg flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                    <FileText className="h-5 w-5 text-primary" />
-                    <span className="font-medium text-foreground">{file.name}</span>
-                </div>
+            <div className="flex items-center gap-3 bg-muted/40 rounded-md px-4 py-3 text-sm">
+              <FileText className="h-4 w-4 text-primary shrink-0" />
+              <span className="font-medium truncate">{file.name}</span>
             </div>
           )}
-          {error && (
-             <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Error de archivo</AlertTitle>
-                <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          <Button onClick={handleAnalyzePdf} disabled={!file || isProcessing} size="lg" className="w-full max-w-xs mx-auto">
-            {isProcessing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BrainCircuit className="mr-2 h-4 w-4" />}
-            {isProcessing ? 'Analizando PDF...' : 'Analizar Estado de Cuenta'}
+
+          <Button
+            onClick={handleAnalyze}
+            disabled={!file || busy}
+            size="lg"
+            className="w-full"
+          >
+            {busy
+              ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Procesando...</>
+              : <><BrainCircuit className="mr-2 h-4 w-4" />Analizar estado de cuenta</>}
           </Button>
         </CardContent>
       </Card>
-      
-      {isProcessing && (
+
+      {/* Layer 1 loading */}
+      {layer1Status === 'loading' && (
         <Card>
-          <CardHeader>
-            <CardTitle>Analizando tu PDF con IA...</CardTitle>
-            <CardDescription>Estamos leyendo y procesando tu estado de cuenta. Esto puede tardar hasta un minuto.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex justify-center items-center py-10">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <CardContent className="flex items-center gap-3 py-6">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">Extrayendo datos del PDF...</p>
           </CardContent>
         </Card>
       )}
 
-      {analysisResult && (
-        <Card>
-            <CardHeader>
-                <CardTitle className="text-2xl">Paso 2: Revisa tu Análisis Financiero</CardTitle>
-                <CardDescription>Este es el resumen y las recomendaciones que nuestro asesor de IA ha generado para ti.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                     <p><strong>Banco Detectado:</strong> {analysisResult.bankName || 'No detectado'}</p>
-                     <p><strong>Período:</strong> {analysisResult.periodStart && analysisResult.periodEnd ? `${analysisResult.periodStart} - ${analysisResult.periodEnd}` : 'No detectado'}</p>
-                </div>
-                
-                {analysisResult.analysis && (
-                    <Card className="bg-muted/30 p-6">
-                        <CardTitle className="text-lg mb-2">{analysisResult.analysis.headline}</CardTitle>
-                        <p className="text-muted-foreground">{analysisResult.analysis.summary}</p>
-                    </Card>
-                )}
+      {/* Layer 1 error */}
+      {layer1Status === 'error' && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>No se pudo leer el PDF</AlertTitle>
+          <AlertDescription>{layer1Error}</AlertDescription>
+        </Alert>
+      )}
 
-                <Table>
-                    <TableHeader>
-                        <TableRow>
-                            <TableHead>Concepto</TableHead>
-                            <TableHead className="text-right">Monto</TableHead>
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        <TableRow>
-                            <TableCell>Depósitos / Créditos Totales</TableCell>
-                            <TableCell className="text-right font-mono text-positive">{formatCurrency(analysisResult.totals.deposits)}</TableCell>
-                        </TableRow>
-                        <TableRow>
-                            <TableCell>Retiros / Débitos Totales</TableCell>
-                            <TableCell className="text-right font-mono text-negative">{formatCurrency(analysisResult.totals.withdrawals)}</TableCell>
-                        </TableRow>
-                        <TableRow>
-                            <TableCell>Comisiones (Fees)</TableCell>
-                            <TableCell className="text-right font-mono">{formatCurrency(analysisResult.totals.fees)}</TableCell>
-                        </TableRow>
-                        <TableRow className="font-bold bg-muted/20">
-                            <TableCell>Saldo Neto del Período</TableCell>
-                            <TableCell className={`text-right font-mono ${analysisResult.totals.net >= 0 ? 'text-positive' : 'text-negative'}`}>{formatCurrency(analysisResult.totals.net)}</TableCell>
-                        </TableRow>
-                    </TableBody>
-                </Table>
-                
-                {analysisResult.analysis && (
-                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        <div className="space-y-4">
-                            <h3 className="font-semibold flex items-center gap-2"><Lightbulb className="h-5 w-5 text-primary"/> Insights Clave</h3>
-                            {analysisResult.analysis.insights.length > 0 ? (
-                                <ul className="space-y-2 list-disc list-inside text-muted-foreground">
-                                    {analysisResult.analysis.insights.map((item, index) => (
-                                        <li key={index}>{item}</li>
-                                    ))}
-                                </ul>
-                            ) : (<p className='text-sm text-muted-foreground'>No se detectaron insights clave.</p>)}
-                        </div>
-                         <div className="space-y-4">
-                            <h3 className="font-semibold flex items-center gap-2"><ShieldAlert className="h-5 w-5 text-orange-500"/> Riesgos Detectados</h3>
-                             {analysisResult.analysis.risks.length > 0 ? (
-                                <ul className="space-y-2 list-disc list-inside text-muted-foreground">
-                                    {analysisResult.analysis.risks.map((item, index) => (
-                                        <li key={index}>{item}</li>
-                                    ))}
-                                </ul>
-                            ) : (<p className='text-sm text-muted-foreground'>No se detectaron riesgos.</p>)}
-                        </div>
-                         <div className="space-y-4">
-                            <h3 className="font-semibold flex items-center gap-2"><BarChart className="h-5 w-5 text-green-500"/> Recomendaciones</h3>
-                             {analysisResult.analysis.recommendations.length > 0 ? (
-                                <ul className="space-y-2 list-disc list-inside text-muted-foreground">
-                                    {analysisResult.analysis.recommendations.map((item, index) => (
-                                        <li key={index}>{item}</li>
-                                    ))}
-                                </ul>
-                             ) : (<p className='text-sm text-muted-foreground'>No se generaron recomendaciones.</p>)}
-                        </div>
-                     </div>
+      {/* Layer 1 results — shown as soon as parsing is done */}
+      {layer1Result && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl flex items-center gap-2">
+              <FileCheck2 className="h-5 w-5 text-primary" />
+              Resumen financiero
+            </CardTitle>
+            <div className="flex flex-wrap gap-4 text-sm text-muted-foreground pt-1">
+              <span><strong className="text-foreground">Banco:</strong> {layer1Result.bankName ?? 'No detectado'}</span>
+              <span>
+                <strong className="text-foreground">Período:</strong>{' '}
+                {layer1Result.periodStart
+                  ? `${layer1Result.periodStart}${layer1Result.periodEnd ? ` — ${layer1Result.periodEnd}` : ''}`
+                  : 'No detectado'}
+              </span>
+              {layer1Result.transactionCount > 0 && (
+                <span><strong className="text-foreground">Movimientos:</strong> {layer1Result.transactionCount}</span>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Concepto</TableHead>
+                  <TableHead className="text-right">Monto</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow>
+                  <TableCell>Depósitos / Créditos</TableCell>
+                  <TableCell className="text-right font-mono text-bj-positive">{fmt(layer1Result.totals.deposits)}</TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell>Retiros / Cargos</TableCell>
+                  <TableCell className="text-right font-mono text-bj-negative">{fmt(layer1Result.totals.withdrawals)}</TableCell>
+                </TableRow>
+                {layer1Result.totals.fees > 0 && (
+                  <TableRow>
+                    <TableCell>Comisiones</TableCell>
+                    <TableCell className="text-right font-mono">{fmt(layer1Result.totals.fees)}</TableCell>
+                  </TableRow>
                 )}
-            </CardContent>
+                <TableRow className="font-semibold bg-muted/20">
+                  <TableCell>Saldo neto del período</TableCell>
+                  <TableCell className={`text-right font-mono ${layer1Result.totals.net >= 0 ? 'text-bj-positive' : 'text-bj-negative'}`}>
+                    {fmt(layer1Result.totals.net)}
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </CardContent>
         </Card>
       )}
 
+      {/* Layer 2 loading */}
+      {layer2Status === 'loading' && (
+        <Card>
+          <CardContent className="flex items-center gap-3 py-6">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">Generando análisis inteligente con IA...</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Layer 2 unavailable — degraded gracefully */}
+      {layer2Status === 'unavailable' && (
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertTitle>Análisis inteligente no disponible</AlertTitle>
+          <AlertDescription>
+            El servicio de IA está bajo alta demanda en este momento. El resumen financiero básico sí fue generado correctamente.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Layer 2 results */}
+      {layer2Result && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl flex items-center gap-2">
+              <BrainCircuit className="h-5 w-5 text-primary" />
+              {layer2Result.headline}
+            </CardTitle>
+            <CardDescription>{layer2Result.summary}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="space-y-3">
+                <h3 className="text-[13px] font-medium uppercase tracking-[0.06em] text-bj-text-secondary flex items-center gap-2">
+                  <Lightbulb className="h-4 w-4" /> Insights
+                </h3>
+                {layer2Result.insights.length > 0 ? (
+                  <ul className="space-y-2 text-[14px] text-muted-foreground list-disc list-inside">
+                    {layer2Result.insights.map((item, i) => <li key={i}>{item}</li>)}
+                  </ul>
+                ) : <p className="text-sm text-muted-foreground">Sin insights detectados.</p>}
+              </div>
+              <div className="space-y-3">
+                <h3 className="text-[13px] font-medium uppercase tracking-[0.06em] text-bj-text-secondary flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4" /> Riesgos
+                </h3>
+                {layer2Result.risks.length > 0 ? (
+                  <ul className="space-y-2 text-[14px] text-muted-foreground list-disc list-inside">
+                    {layer2Result.risks.map((item, i) => <li key={i}>{item}</li>)}
+                  </ul>
+                ) : <p className="text-sm text-muted-foreground">Sin riesgos detectados.</p>}
+              </div>
+              <div className="space-y-3">
+                <h3 className="text-[13px] font-medium uppercase tracking-[0.06em] text-bj-text-secondary flex items-center gap-2">
+                  <BarChart className="h-4 w-4" /> Recomendaciones
+                </h3>
+                {layer2Result.recommendations.length > 0 ? (
+                  <ul className="space-y-2 text-[14px] text-muted-foreground list-disc list-inside">
+                    {layer2Result.recommendations.map((item, i) => <li key={i}>{item}</li>)}
+                  </ul>
+                ) : <p className="text-sm text-muted-foreground">Sin recomendaciones.</p>}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
-  )
+  );
 }
 
 function AuditTab() {
