@@ -315,21 +315,24 @@ export function parseTotals(text: string): {
   }
 
   // Priority 2: Generic labeled totals (English + Spanish)
-  let deposits    = findLabeledAmount(text, DEPOSIT_LABELS);
-  let withdrawals = findLabeledAmount(text, WITHDRAWAL_LABELS);
-  const fees      = findLabeledAmount(text, FEE_LABELS);
-
-  if (deposits > 0 || withdrawals > 0) {
-    dbg('generic labeled totals →', deposits, withdrawals, fees);
-    return {
-      usedFallback: false,
-      result: {
-        deposits,
-        withdrawals,
-        fees,
-        net: Math.round((deposits - withdrawals - fees) * 100) / 100,
-      },
-    };
+  // Require BOTH sides to avoid partial matches (e.g. WF has "Total withdrawals" label
+  // but no matching deposit label, which would return deposits=$0 incorrectly).
+  {
+    const dep = findLabeledAmount(text, DEPOSIT_LABELS);
+    const wit = findLabeledAmount(text, WITHDRAWAL_LABELS);
+    const fee = findLabeledAmount(text, FEE_LABELS);
+    if (dep > 0 && wit > 0) {
+      dbg('generic labeled totals →', dep, wit, fee);
+      return {
+        usedFallback: false,
+        result: {
+          deposits: dep,
+          withdrawals: wit,
+          fees: fee,
+          net: Math.round((dep - wit - fee) * 100) / 100,
+        },
+      };
+    }
   }
 
   // Priority 3: Heuristic — scan individual transaction lines
@@ -348,41 +351,70 @@ export function parseTotals(text: string): {
 
   dbg('heuristic: transaction rows found:', rows.length);
 
-  // For WF: in each tx row, the LAST amount is the running balance (skip it),
-  // the second-to-last (if exists) is the tx amount.
+  let deposits = 0;
+  let withdrawals = 0;
+  const fees = findLabeledAmount(text, FEE_LABELS);
+
+  // WF-style balance tracking: when all amounts are positive, the last amount
+  // in each row is the running balance. Compare consecutive balances to infer direction.
+  const allPositive = rows.length > 0 && rows.every(r => r.amounts.every(a => a >= 0));
+  if (allPositive) {
+    const { opening } = detectOpeningEndingBalance(text);
+    let prevBal: number | null = opening;
+    let balanceTracked = false;
+
+    for (const row of rows) {
+      const n = row.amounts.length;
+      if (n === 0) continue;
+      const bal = row.amounts[n - 1]; // last = running balance
+      if (n >= 2 && prevBal !== null) {
+        const txAmt = row.amounts[0];
+        if (bal > prevBal) { deposits += txAmt; balanceTracked = true; }
+        else if (bal < prevBal) { withdrawals += txAmt; balanceTracked = true; }
+      }
+      prevBal = bal;
+    }
+
+    if (balanceTracked) {
+      deposits    = Math.round(deposits    * 100) / 100;
+      withdrawals = Math.round(withdrawals * 100) / 100;
+      dbg('balance-direction heuristic →', deposits, withdrawals);
+
+      // Use opening/ending net if available (more accurate than summing tx amounts)
+      const { opening: op, ending: en } = detectOpeningEndingBalance(text);
+      const net = (op !== null && en !== null)
+        ? Math.round((en - op) * 100) / 100
+        : Math.round((deposits - withdrawals - fees) * 100) / 100;
+
+      return { usedFallback: true, result: { deposits, withdrawals, fees, net } };
+    }
+  }
+
+  // Fallback for sign-based statements (negative = withdrawal)
   for (const row of rows) {
     if (row.amounts.length === 0) continue;
-    // Only one amount visible → could be tx amount (not balance) — treat as unsigned
-    // Two amounts → first is tx, last is balance
-    const txAmt = row.amounts.length >= 2 ? row.amounts[0] : row.amounts[0];
+    const txAmt = row.amounts[0];
     if (txAmt > 0) deposits += txAmt;
     else withdrawals += Math.abs(txAmt);
   }
 
   deposits    = Math.round(deposits    * 100) / 100;
   withdrawals = Math.round(withdrawals * 100) / 100;
-  dbg('heuristic totals →', deposits, withdrawals);
+  dbg('sign-based heuristic →', deposits, withdrawals);
 
-  // Priority 4: Opening / Ending balance difference for net (best-effort)
+  // Priority 4: Opening / Ending balance net override
   const { opening, ending } = detectOpeningEndingBalance(text);
+  const net = (opening !== null && ending !== null)
+    ? Math.round((ending - opening) * 100) / 100
+    : Math.round((deposits - withdrawals - fees) * 100) / 100;
+
   if (opening !== null && ending !== null) {
-    const net = Math.round((ending - opening) * 100) / 100;
-    dbg('balance fallback net →', net, 'opening:', opening, 'ending:', ending);
-    // We still can't split deposits vs withdrawals, but at least net is accurate
-    return {
-      usedFallback: true,
-      result: { deposits, withdrawals, fees, net },
-    };
+    dbg('balance net fallback →', net, 'opening:', opening, 'ending:', ending);
   }
 
   return {
     usedFallback: true,
-    result: {
-      deposits,
-      withdrawals,
-      fees,
-      net: Math.round((deposits - withdrawals - fees) * 100) / 100,
-    },
+    result: { deposits, withdrawals, fees, net },
   };
 }
 
