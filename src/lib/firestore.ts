@@ -274,6 +274,12 @@ export async function saveBudget(userId: string, budget: Omit<Budget, 'id'>) {
   }, { merge: true });
 }
 
+export async function deleteBudget(userId: string, budgetId: string): Promise<void> {
+  if (!userId) throw new Error('User not authenticated');
+  const budgetRef = doc(firestore, 'users', userId, 'budgets', budgetId);
+  await deleteDoc(budgetRef);
+}
+
 export async function cleanupDuplicateTransactions(userId: string): Promise<{
   success: boolean;
   error?: string;
