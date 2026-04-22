@@ -17,27 +17,35 @@ Datos:
 
 Recomendación:`;
 
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 150, temperature: 0.7 },
-        }),
-      }
-    );
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
 
-    const data = await response.json();
-    const recommendation = data.candidates?.[0]?.content?.parts?.[0]?.text ??
-      'Registra tus gastos diariamente para identificar oportunidades de ahorro.';
+  for (const model of models) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { maxOutputTokens: 150, temperature: 0.7 },
+          }),
+        }
+      );
 
-    return NextResponse.json({ recommendation });
-  } catch {
-    return NextResponse.json({
-      recommendation: 'Registra tus gastos diariamente para identificar oportunidades de ahorro.',
-    });
+      if (response.status === 503 || response.status === 429) continue;
+
+      const data = await response.json();
+      const recommendation = data.candidates?.[0]?.content?.parts?.[0]?.text ??
+        'Registra tus gastos diariamente para identificar oportunidades de ahorro.';
+
+      return NextResponse.json({ recommendation });
+    } catch {
+      continue;
+    }
   }
+
+  return NextResponse.json({
+    recommendation: 'Registra tus gastos diariamente para identificar oportunidades de ahorro.',
+  });
 }
