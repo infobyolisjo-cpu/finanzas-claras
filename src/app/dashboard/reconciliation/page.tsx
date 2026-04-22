@@ -1010,6 +1010,14 @@ function PdfAnalysisTab() {
       }
 
       summary = parsePdfText(textParts.join('\n'));
+
+      // Scanned PDF guard
+      if ((summary as any).error) {
+        setLayer1Status('error');
+        setLayer1Error((summary as any).error);
+        return;
+      }
+
       setLayer1Result(summary);
       setLayer1Status('done');
     } catch (e: any) {
@@ -1130,6 +1138,13 @@ function PdfAnalysisTab() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
+            {layer1Result.parseWarning && (
+              <Alert>
+                <Info className="h-4 w-4" />
+                <AlertTitle>Estimación heurística</AlertTitle>
+                <AlertDescription className="text-[13px]">{layer1Result.parseWarning}</AlertDescription>
+              </Alert>
+            )}
             <Table>
               <TableHeader>
                 <TableRow>
