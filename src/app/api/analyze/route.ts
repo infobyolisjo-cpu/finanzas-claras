@@ -1,51 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getInsights, type InsightInput } from '@/lib/ai/get-insights';
 
 export async function POST(request: NextRequest) {
-  const { income, expenses } = await request.json();
-  const balance = income - expenses;
-  const savingsRate = income > 0 ? ((balance / income) * 100).toFixed(1) : 0;
+  const body = await request.json();
 
-  const prompt = `Eres un asesor financiero personal conciso y empático.
-Analiza esta situación financiera mensual y da UNA recomendación práctica y específica en 2-3 oraciones máximo.
-Sé directo, positivo y accionable. Escribe en español.
+  // Accept both old shape { income, expenses } and new shape { InsightInput fields }
+  const input: InsightInput = {
+    bank:              body.bank              ?? null,
+    period:            body.period            ?? null,
+    income:            body.income            ?? 0,
+    expenses:          body.expenses          ?? 0,
+    fees:              body.fees              ?? 0,
+    net:               body.net               ?? (body.income ?? 0) - (body.expenses ?? 0),
+    transaction_count: body.transaction_count ?? 0,
+    top_descriptions:  body.top_descriptions  ?? [],
+  };
 
-Datos:
-- Ingresos mensuales: $${income.toLocaleString()}
-- Gastos mensuales: $${expenses.toLocaleString()}
-- Saldo disponible: $${balance.toLocaleString()}
-- Tasa de ahorro: ${savingsRate}%
+  const result = await getInsights(input);
 
-Recomendación:`;
-
-  const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'];
-
-  for (const model of models) {
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { maxOutputTokens: 150, temperature: 0.7 },
-          }),
-        }
-      );
-
-      if (response.status === 503 || response.status === 429) continue;
-
-      const data = await response.json();
-      const recommendation = data.candidates?.[0]?.content?.parts?.[0]?.text ??
-        'Registra tus gastos diariamente para identificar oportunidades de ahorro.';
-
-      return NextResponse.json({ recommendation });
-    } catch {
-      continue;
-    }
+  if (!result.ok) {
+    return NextResponse.json({
+      ok:            false,
+      provider_used: 'none',
+      error:         result.error,
+      // Legacy field so existing callers don't break
+      recommendation: 'Registra tus gastos diariamente para identificar oportunidades de ahorro.',
+    });
   }
 
   return NextResponse.json({
-    recommendation: 'Registra tus gastos diariamente para identificar oportunidades de ahorro.',
+    ok:             true,
+    provider_used:  result.provider,
+    data:           result.data,
+    // Legacy field
+    recommendation: result.data.summary,
   });
 }
