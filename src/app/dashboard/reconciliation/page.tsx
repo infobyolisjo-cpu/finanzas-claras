@@ -1004,9 +1004,26 @@ function PdfAnalysisTab() {
       for (let i = 1; i <= pages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
-        textParts.push(
-          content.items.map((item: any) => ('str' in item ? item.str : '')).join(' ')
-        );
+
+        type Cell = { x: number; str: string };
+        const rowMap = new Map<number, Cell[]>();
+        const Y_TOL = 4;
+        for (const rawItem of content.items) {
+          const item = rawItem as any;
+          if (!('str' in item) || !item.str?.trim()) continue;
+          const x = Math.round(item.transform[4]);
+          const y = Math.round(item.transform[5]);
+          let rowY = -1;
+          for (const ky of rowMap.keys()) {
+            if (Math.abs(ky - y) <= Y_TOL) { rowY = ky; break; }
+          }
+          if (rowY === -1) rowMap.set(y, [{ x, str: item.str }]);
+          else rowMap.get(rowY)!.push({ x, str: item.str });
+        }
+        const rows = Array.from(rowMap.entries())
+          .sort(([a], [b]) => b - a)
+          .map(([, cells]) => cells.sort((c1, c2) => c1.x - c2.x).map(c => c.str).join('\t'));
+        textParts.push(...rows);
       }
 
       summary = parsePdfText(textParts.join('\n'));
