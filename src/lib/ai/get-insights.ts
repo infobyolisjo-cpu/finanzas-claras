@@ -34,26 +34,51 @@ function buildPrompt(input: InsightInput): string {
     new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(n);
   const savingsRate = input.income > 0 ? ((input.net / input.income) * 100).toFixed(1) : '0';
 
-  return `Eres una asesora financiera personal experta. Analiza este resumen financiero y genera insights en español.
+  const summary = {
+    banco:            input.bank ?? 'No identificado',
+    período:          input.period ?? 'No identificado',
+    ingresos:         mxn(input.income),
+    gastos:           mxn(input.expenses),
+    comisiones:       mxn(input.fees),
+    saldo_neto:       mxn(input.net),
+    tasa_de_ahorro:   `${savingsRate}%`,
+    movimientos:      input.transaction_count,
+    principales:      input.top_descriptions.slice(0, 6),
+  };
+
+  return `Eres un asesor financiero práctico y directo.
+
+Analiza este resumen financiero real y responde de forma específica (no genérica).
 
 Datos:
-- Banco: ${input.bank ?? 'No identificado'}
-- Período: ${input.period ?? 'No identificado'}
-- Ingresos: ${mxn(input.income)}
-- Gastos: ${mxn(input.expenses)}
-- Comisiones: ${mxn(input.fees)}
-- Saldo neto: ${mxn(input.net)}
-- Tasa de ahorro: ${savingsRate}%
-- Movimientos: ${input.transaction_count}
-- Principales conceptos: ${input.top_descriptions.slice(0, 6).join(', ') || 'No identificados'}
+${JSON.stringify(summary, null, 2)}
 
-Responde ÚNICAMENTE con JSON válido (sin markdown):
+Reglas:
+- Usa números concretos del caso
+- No repitas lo obvio
+- Prioriza acciones claras
+- Máximo 3 insights clave
+- Máximo 2 riesgos importantes
+- Máximo 3 recomendaciones accionables
+
+Responde ÚNICAMENTE con JSON válido (sin markdown), siguiendo este formato exacto:
 {
-  "headline": "título corto y claro (máx 10 palabras)",
-  "summary": "resumen ejecutivo en 2-3 oraciones concretas",
-  "insights": ["insight 1", "insight 2", "insight 3"],
-  "risks": ["riesgo 1", "riesgo 2"],
-  "recommendations": ["recomendación 1", "recomendación 2", "recomendación 3"]
+  "headline": "diagnóstico claro en máx 10 palabras, con números reales",
+  "summary": "2 líneas máximo: situación concreta con los montos del caso",
+  "insights": [
+    "insight específico con número concreto",
+    "insight específico con número concreto",
+    "insight específico con número concreto"
+  ],
+  "risks": [
+    "riesgo concreto basado en los datos",
+    "riesgo concreto basado en los datos"
+  ],
+  "recommendations": [
+    "paso concreto y accionable (no genérico)",
+    "paso concreto y accionable (no genérico)",
+    "paso concreto y accionable (no genérico)"
+  ]
 }`;
 }
 
