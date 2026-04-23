@@ -956,14 +956,32 @@ function CsvImportTab() {
 type Layer1Status = 'idle' | 'loading' | 'done' | 'error';
 type Layer2Status = 'idle' | 'loading' | 'done' | 'unavailable';
 
+// Converts "MM/DD", "MM/DD/YY", "MM/DD/YYYY" from PDF parser to a UTC Date
+function parsePdfDate(dateStr: string, fallbackYear: number): Date {
+  const parts = dateStr.split('/');
+  const month = parseInt(parts[0], 10) - 1;
+  const day   = parseInt(parts[1], 10);
+  let year    = fallbackYear;
+  if (parts.length >= 3) {
+    year = parseInt(parts[2], 10);
+    if (year < 100) year += 2000;
+  }
+  return new Date(Date.UTC(year, month, day));
+}
+
 function PdfAnalysisTab() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const { refreshTransactions, setSelectedPeriod } = usePeriod();
   const [file, setFile] = useState<File | null>(null);
+  const [fileBuffer, setFileBuffer] = useState<ArrayBuffer | null>(null);
   const [layer1Status, setLayer1Status] = useState<Layer1Status>('idle');
   const [layer2Status, setLayer2Status] = useState<Layer2Status>('idle');
   const [layer1Result, setLayer1Result] = useState<PdfSummary | null>(null);
   const [layer2Result, setLayer2Result] = useState<AiInsights | null>(null);
   const [layer1Error, setLayer1Error] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [savedCount, setSavedCount] = useState<number | null>(null);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
@@ -973,6 +991,8 @@ function PdfAnalysisTab() {
       return;
     }
     setFile(selectedFile);
+    setFileBuffer(null);
+    setSavedCount(null);
     setLayer1Status('idle');
     setLayer2Status('idle');
     setLayer1Result(null);
@@ -997,6 +1017,8 @@ function PdfAnalysisTab() {
         'https://unpkg.com/pdfjs-dist@4.5.136/build/pdf.worker.min.mjs';
 
       const arrayBuffer = await file.arrayBuffer();
+      setFileBuffer(arrayBuffer);
+      setSavedCount(null);
       const pdf = await getDocument({ data: arrayBuffer }).promise;
 
       const pages = Math.min(pdf.numPages, 15);
@@ -1063,6 +1085,85 @@ function PdfAnalysisTab() {
       }
     } catch {
       setLayer2Status('unavailable');
+    }
+  };
+
+  const handleSavePdfTransactions = async () => {
+    if (!user || !layer1Result || !file || !fileBuffer) return;
+    if (layer1Result.transactions.length === 0) {
+      toast({ title: 'Sin transacciones', description: 'No se detectaron movimientos individuales en este PDF. Solo se muestra el resumen.' });
+      return;
+    }
+    setIsSaving(true);
+    try {
+      // Determine fallback year from periodStart
+      const yearStr = layer1Result.periodStart?.match(/\d{4}/)?.[0];
+      const fallbackYear = yearStr ? parseInt(yearStr, 10) : new Date().getFullYear();
+
+      // Check for duplicate import
+      const fileHash = await createFileHash(fileBuffer);
+      const existing = await findImportByHash(user.uid, fileHash);
+      if (existing) {
+        toast({ title: 'Archivo ya importado', description: `Este PDF ya fue guardado el ${format(existing.createdAt, 'dd/MM/yyyy', { locale: es })}.` });
+        setIsSaving(false);
+        return;
+      }
+
+      // Build periods list from transaction dates
+      const periods = [...new Set(layer1Result.transactions.map(tx => {
+        const d = parsePdfDate(tx.date, fallbackYear);
+        return format(d, 'yyyy-MM');
+      }))].sort((a, b) => b.localeCompare(a));
+
+      // Register the file import
+      const saveFileResult = await saveImportedFileAction({
+        source: 'pdf',
+        fileName: file.name,
+        fileSize: file.size,
+        fileHash,
+        periods,
+        totalExtracted: layer1Result.transactions.length,
+        totalInserted: 0,
+        totalDuplicates: 0,
+        totalTransfersExcluded: 0,
+        status: 'completed',
+      });
+      if (!saveFileResult.success || !saveFileResult.importId) throw new Error(saveFileResult.error || 'Error al registrar importación.');
+
+      // Convert ParsedTx[] to Transaction format
+      const txsToSave = await Promise.all(layer1Result.transactions.map(async tx => {
+        const date   = parsePdfDate(tx.date, fallbackYear);
+        const period = format(date, 'yyyy-MM');
+        const isTransferLike = /transfer|zelle|pago\s+tdc|payment to|payment from/i.test(tx.description);
+        const type: 'income' | 'expense' | 'transfer' = isTransferLike ? 'transfer' : tx.type;
+        const id = await createTransactionHash(`${format(date, 'yyyy-MM-dd')}-${tx.description}-${tx.amount}-pdf`);
+        return {
+          id,
+          data: {
+            date,
+            amount: tx.amount,
+            direction: (tx.type === 'income' ? 'credit' : 'debit') as 'credit' | 'debit',
+            type,
+            isTransfer: isTransferLike,
+            category: 'other',
+            descriptionRaw: tx.description,
+            period,
+            source: 'pdf' as const,
+            bankType: (tx.type === 'income' ? 'deposit_credit' : 'withdrawal_debit') as 'deposit_credit' | 'withdrawal_debit',
+            bankSubtype: (tx.type === 'income' ? 'none' : 'unknown_debit') as 'none' | 'unknown_debit',
+          },
+        };
+      }));
+
+      const result = await saveImportedTransactionsAction(saveFileResult.importId, txsToSave);
+      setSavedCount(result.savedCount);
+      toast({ title: '¡Guardado!', description: `${result.savedCount} transacciones guardadas en tu historial. ${result.duplicatesIgnored} duplicados ignorados.` });
+      refreshTransactions();
+      if (periods.length > 0) setSelectedPeriod(periods[0]);
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Error al guardar', description: err.message });
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -1192,6 +1293,30 @@ function PdfAnalysisTab() {
                 </TableRow>
               </TableBody>
             </Table>
+
+            {/* Save to history button */}
+            <div className="pt-2">
+              {savedCount !== null ? (
+                <div className="flex items-center gap-2 text-sm text-emerald-600 font-medium">
+                  <CheckCircle className="h-4 w-4" />
+                  {savedCount} transacciones guardadas en tu historial. Puedes verlas en Reporte y Movimientos.
+                </div>
+              ) : (
+                <Button
+                  onClick={handleSavePdfTransactions}
+                  disabled={isSaving || layer1Result.transactions.length === 0}
+                  className="w-full sm:w-auto"
+                >
+                  {isSaving
+                    ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Guardando...</>
+                    : <><Save className="mr-2 h-4 w-4" />
+                      {layer1Result.transactions.length > 0
+                        ? `Guardar ${layer1Result.transactions.length} transacciones en historial`
+                        : 'Sin transacciones individuales detectadas'}
+                    </>}
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
